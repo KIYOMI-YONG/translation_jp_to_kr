@@ -14,10 +14,9 @@ import ollama
 
 # 각 작업은 서로 다른 Ollama 모델을 사용할 수 있다.
 # 후보 추출 모델은 설치된 소형 모델 태그로 변경할 수 있다.
-GLOSSARY_MODEL_NAME = "gemma4:12b-it-qat"
+GLOSSARY_MODEL_NAME = "qwen3:4b"
 TRANSLATION_MODEL_NAME = "gemma4:12b-it-qat"
-TITLE_MODEL_NAME = "gemma4:12b-it-qat"
-
+TITLE_MODEL_NAME = "gemma4:e2b"
 BASE_DIR = Path(__file__).resolve().parent
 print(f"실행 중인 스크립트: {Path(__file__).resolve()}")
 
