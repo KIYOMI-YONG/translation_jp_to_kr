@@ -1,0 +1,67 @@
+{
+  "山手線": {
+    "korean": "야마노테선",
+    "reading": "Yamanotesen",
+    "type": "place"
+  },
+  "東京都": {
+    "korean": "도쿄도",
+    "reading": "Tōkyō-to",
+    "type": "place"
+  },
+  "東京駅": {
+    "korean": "도쿄역",
+    "reading": "Tōkyōeki",
+    "type": "place"
+  },
+  "おっぱいドーザー": {
+    "korean": "젖도저",
+    "reading": "Oppai Dōzā",
+    "type": "term"
+  },
+  "都心": {
+    "korean": "도심",
+    "reading": "Toshin",
+    "type": "place"
+  },
+  "東京都心": {
+    "korean": "도쿄 도심",
+    "reading": "Tokyo Toshin",
+    "type": "place"
+  },
+  "新宿": {
+    "korean": "신주쿠",
+    "reading": "Shinjuku",
+    "type": "place"
+  },
+  "瓦礫": {
+    "korean": "잔해",
+    "reading": "Gareki",
+    "type": "term"
+  },
+  "東京タワー": {
+    "korean": "도쿄 타워",
+    "reading": "Tokyo Tawaa",
+    "type": "place"
+  },
+  "スカイツリー": {
+    "korean": "스카이트리",
+    "reading": "Sukaitsurii",
+    "type": "place"
+  },
+  "レインボーブリッジ": {
+    "korean": "레인보우 브릿지",
+    "reading": "Reinbooburijji",
+    "type": "place"
+  },
+  "お台場": {
+    "korean": "오다이바",
+    "reading": "Odaiba",
+    "type": "place"
+  },
+  "都心大量消費パイズリ": {
+    "korean": "도심 대량 소비 파이즈리",
+    "reading": "Toshin Tairyou Shouhi Paizuri",
+    "type": "term"
+  }
+}
