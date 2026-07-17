@@ -25,6 +25,27 @@ OUTPUT_DIR = BASE_DIR / "output"
 GLOSSARY_PATH = BASE_DIR / "glossary.json"
 GLOSSARY_CANDIDATES_PATH = BASE_DIR / "glossary_candidates.json"
 
+TRANSLATION_DIRECTIONS = {
+    "ja_ko": {
+        "source_language": "Japanese",
+        "target_language": "Korean",
+        "source_label": "일본어",
+        "target_label": "한국어",
+        "output_suffix": "ko",
+        "glossary_path": GLOSSARY_PATH,
+        "candidates_path": GLOSSARY_CANDIDATES_PATH,
+    },
+    "ko_ja": {
+        "source_language": "Korean",
+        "target_language": "Japanese",
+        "source_label": "한국어",
+        "target_label": "일본어",
+        "output_suffix": "ja",
+        "glossary_path": BASE_DIR / "glossary_ko_ja.json",
+        "candidates_path": BASE_DIR / "glossary_candidates_ko_ja.json",
+    },
+}
+
 SUPPORTED_EXTENSIONS = {".txt"}
 
 # 한 번에 전송할 대략적인 문자 수
@@ -63,6 +84,27 @@ def select_operation() -> str:
             return "translate"
         if choice in {"q", "quit", "exit"}:
             return "quit"
+
+        print("1, 2 또는 q를 입력하세요.")
+
+
+def select_translation_direction() -> str:
+    """번역할 원문 언어와 목표 언어를 선택한다."""
+    print()
+    print("번역 방향을 선택하세요.")
+    print("1. 일본어 → 한국어")
+    print("2. 한국어 → 일본어")
+    print("q. 이전 메뉴")
+
+    while True:
+        choice = input("번역 방향: ").strip().lower()
+
+        if choice == "1":
+            return "ja_ko"
+        if choice == "2":
+            return "ko_ja"
+        if choice in {"q", "quit", "exit"}:
+            return "back"
 
         print("1, 2 또는 q를 입력하세요.")
 
@@ -126,15 +168,17 @@ def select_input_file() -> Path | None:
         return files[selected_index]
     
 
-def read_source_text(path: Path) -> str:
+def read_source_text(path: Path, source_language: str) -> str:
     """
-    UTF-8과 일본어 Windows 인코딩을 차례대로 시도한다.
+    UTF-8과 원문 언어에 맞는 Windows 인코딩을 차례대로 시도한다.
     """
-    encodings = [
-        "utf-8-sig",
-        "utf-8",
-        "cp932",
-    ]
+    legacy_encoding = (
+        "cp932"
+        if source_language == "Japanese"
+        else "cp949"
+    )
+
+    encodings = ["utf-8-sig", "utf-8", legacy_encoding]
 
     errors: list[str] = []
 
@@ -157,21 +201,31 @@ def read_source_text(path: Path) -> str:
 
 def make_output_paths(
     input_path: Path,
+    direction_key: str,
     translated_title: str | None = None,
 ) -> tuple[Path, Path]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    output_suffix = TRANSLATION_DIRECTIONS[direction_key][
+        "output_suffix"
+    ]
+
     if translated_title:
-        output_stem = sanitize_filename(translated_title)
+        output_stem = (
+            f"{sanitize_filename(translated_title)}_{output_suffix}"
+        )
     else:
-        output_stem = f"{input_path.stem}_ko"
+        output_stem = f"{input_path.stem}_{output_suffix}"
 
     output_path = OUTPUT_DIR / f"{output_stem}.txt"
 
     # 진행 파일은 원본 파일명을 기준으로 유지한다.
     progress_path = (
         OUTPUT_DIR
-        / f".{input_path.stem}_translation_progress.json"
+        / (
+            f".{input_path.stem}_{direction_key}"
+            "_translation_progress.json"
+        )
     )
 
     return output_path, progress_path
@@ -183,12 +237,16 @@ def make_output_paths(
 def detect_source_language(text: str) -> str:
     """
     간단한 문자 기반 언어 감지.
-    일본어 문자가 있으면 Japanese,
+    한글이 있으면 Korean, 일본어 문자가 있으면 Japanese,
     그 외에는 English로 간주한다.
     """
+    korean_pattern = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff]")
     japanese_pattern = re.compile(
         r"[\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf\u4e00-\u9fff]"
     )
+
+    if korean_pattern.search(text):
+        return "Korean"
 
     if japanese_pattern.search(text):
         return "Japanese"
@@ -199,6 +257,15 @@ def detect_source_language(text: str) -> str:
 # =========================
 # 용어집
 # =========================
+
+def get_glossary_target(entry: dict) -> str:
+    """신규 target 필드와 기존 방향별 필드를 함께 지원한다."""
+    return (
+        entry.get("target", "")
+        or entry.get("korean", "")
+        or entry.get("japanese", "")
+    )
+
 
 def load_glossary(path: Path) -> dict:
     """
@@ -261,9 +328,9 @@ def load_glossary(path: Path) -> dict:
                 f"용어집 항목 형식이 잘못되었습니다: {source}"
             )
 
-        if not entry.get("korean"):
+        if not get_glossary_target(entry):
             raise ValueError(
-                f"용어집 항목에 korean 값이 없습니다: {source}"
+                f"용어집 항목에 목표 언어 표기가 없습니다: {source}"
             )
 
     return data
@@ -284,7 +351,19 @@ def save_json_file(path: Path, data: dict) -> None:
 def generate_glossary_candidates(
     source_text: str,
     source_language: str,
+    target_language: str,
 ) -> dict:
+    if source_language == "Japanese":
+        proper_noun_rule = """
+일본어 인명과 지명은 한국식 한자음이 아니라 실제 일본어 독음을 기준으로
+한국어 표기를 작성하십시오.
+""".strip()
+    else:
+        proper_noun_rule = """
+한국 인명과 지명은 원래 한국어 발음을 기준으로 자연스러운 일본어 표기를
+작성하십시오. 확정된 한자 표기가 없다면 인명은 가타카나 음역을 우선하십시오.
+""".strip()
+
     prompt = f"""
 다음 {source_language} 소설 원문에서 반복적으로 등장할 가능성이 있는
 고유명사와 핵심 용어를 추출하십시오.
@@ -304,14 +383,13 @@ def generate_glossary_candidates(
 - 한 번만 등장하는 중요하지 않은 표현
 - 문장 전체
 
-일본어 인명과 지명은 한국식 한자음이 아니라 일본어 실제 독음을 기준으로
-한국어 표기를 작성하십시오.
+{proper_noun_rule}
 
 반드시 다음 JSON 형식만 출력하십시오.
 
 {{
   "원문 표기": {{
-    "korean": "한국어 표기",
+    "target": "{target_language} 표기",
     "reading": "원어 독음",
     "type": "person | place | organization | term"
   }}
@@ -402,7 +480,7 @@ def apply_furigana_hints(
 
         if entry is None:
             updated[written_form] = {
-                "korean": "",
+                "target": "",
                 "reading": reading,
                 "type": "unknown",
             }
@@ -476,7 +554,7 @@ def format_glossary(glossary: dict) -> str:
             lines.append(f"- {source} → {entry}")
             continue
 
-        korean = entry.get("korean", "")
+        target = get_glossary_target(entry)
         reading = entry.get("reading", "")
         entry_type = entry.get("type", "")
 
@@ -490,11 +568,11 @@ def format_glossary(glossary: dict) -> str:
 
         if details:
             lines.append(
-                f"- {source} → {korean} "
+                f"- {source} → {target} "
                 f"({', '.join(details)})"
             )
         else:
-            lines.append(f"- {source} → {korean}")
+            lines.append(f"- {source} → {target}")
 
     return "\n".join(lines)
 
@@ -687,14 +765,13 @@ def split_long_block(text: str, max_chars: int) -> list[str]:
 
 def make_system_prompt(
     source_language: str,
+    target_language: str,
     glossary: dict,
     current_text: str = "",
 ) -> str:
     glossary_text = format_glossary(glossary)
 
-    language_specific_rules = ""
-
-    if source_language == "Japanese":
+    if source_language == "Japanese" and target_language == "Korean":
         reading_hints = extract_furigana_hints(current_text)
 
         language_specific_rules = f"""
@@ -708,26 +785,47 @@ def make_system_prompt(
 4. 일본어식 직역투는 피하되 원문의 의미를 생략하지 않는다.
 5. 문장 끝의 말투와 감정적 뉘앙스를 살린다.
 """.strip()
-
-    elif source_language == "English":
-        language_specific_rules = """
-영어 문체 처리 규칙:
-
-1. 대명사가 가리키는 대상을 앞뒤 문맥으로 판단한다.
-2. 영어식 장문은 의미를 보존하면서 자연스러운 한국어 호흡으로 나눈다.
-3. 관용구는 단어 그대로 옮기지 말고 문맥상의 의미를 번역한다.
-4. 인물의 말투, 계층, 시대적 배경을 가능한 한 유지한다.
-5. 영어권 인명과 지명은 일반적으로 통용되는 한국어 표기를 우선한다.
+        script_rules = """
+11. 최종 번역문에는 히라가나, 가타카나, 일본식 한자가 남아 있어서는 안 됩니다.
+12. 일본어 감탄사, 비명, 의성어와 의태어도 자연스러운 한글로 완전히 옮깁니다.
+13. 한글과 일본어 문자를 섞은 표기를 만들지 않습니다.
+14. 예: ひゃっ → "꺅", "히익", "으악" 등 문맥에 맞는 한국어 표현
+15. 예: えっ → "어?", "뭐?", "엣?" 중 문맥에 맞는 표현
+16. 예: きゃあ → "꺄악", "꺅"
 """.strip()
 
+    elif source_language == "Korean" and target_language == "Japanese":
+        language_specific_rules = """
+한국어 문체 처리 규칙:
+
+1. 자연스러운 일본어 소설 문체와 문장 호흡으로 번역한다.
+2. 존댓말, 반말, 호칭과 인물 관계를 일본어에서도 일관되게 유지한다.
+3. 인물별 1인칭과 말투를 문맥에 맞게 선택하고 이후에도 유지한다.
+4. 한국 인명과 지명은 용어집 표기를 우선하고, 없으면 원래 발음을 기준으로 음역한다.
+5. 작품 설정상 일본식 명칭으로 확정된 항목은 용어집의 한자·가나 표기를 따른다.
+6. 한국어 감탄사, 비명, 의성어와 의태어를 자연스러운 일본어 표현으로 옮긴다.
+7. 원문에 없는 일본식 설정이나 문화 요소를 임의로 추가하지 않는다.
+""".strip()
+        script_rules = """
+11. 최종 번역문에는 한글이 남아 있어서는 안 됩니다.
+12. 한국어 감탄사, 비명, 의성어와 의태어도 일본어로 완전히 옮깁니다.
+13. 일본어와 한글을 섞은 표기를 만들지 않습니다.
+14. 한국 인명은 용어집에 다른 표기가 없으면 가타카나 음역을 우선합니다.
+""".strip()
+    else:
+        raise ValueError(
+            f"지원하지 않는 번역 방향입니다: "
+            f"{source_language} → {target_language}"
+        )
+
     return f"""
-당신은 {source_language} 소설을 자연스러운 한국어로 번역하는
+당신은 {source_language} 소설을 자연스러운 {target_language}로 번역하는
 전문 문학 번역가입니다.
 
 다음 원칙을 반드시 지키십시오.
 
 1. 원문의 의미, 분위기, 감정과 정보량을 보존합니다.
-2. 직역투를 피하고 자연스러운 한국어 소설 문체로 번역합니다.
+2. 직역투를 피하고 자연스러운 {target_language} 소설 문체로 번역합니다.
 3. 인물의 말투, 존댓말, 반말과 성격을 일관되게 유지합니다.
 4. 원문에 없는 설명이나 내용을 추가하지 않습니다.
 5. 원문 내용을 요약하거나 생략하지 않습니다.
@@ -736,12 +834,7 @@ def make_system_prompt(
 8. 고유명사 표기를 번역 전체에서 일관되게 유지합니다.
 9. 번역문 외의 설명, 주석, 서문, 감상은 출력하지 않습니다.
 10. 이전 문맥은 참고만 하고 현재 번역 대상만 출력합니다.
-11. 최종 번역문에는 히라가나, 가타카나, 일본식 한자가 남아 있어서는 안 됩니다.
-12. 일본어 감탄사, 비명, 의성어와 의태어도 자연스러운 한글로 완전히 옮깁니다.
-13. 한글과 일본어 문자를 섞은 표기를 만들지 않습니다.
-14. 예: ひゃっ → "꺅", "히익", "으악" 등 문맥에 맞는 한국어 표현
-15. 예: えっ → "어?", "뭐?", "엣?" 중 문맥에 맞는 표현
-16. 예: きゃあ → "꺄악", "꺅"
+{script_rules}
 
 언어별 세부 규칙:
 
@@ -754,6 +847,7 @@ def make_system_prompt(
 
 def make_user_prompt(
     text: str,
+    target_language: str,
     previous_source: str = "",
     previous_translation: str = "",
 ) -> str:
@@ -783,7 +877,7 @@ def make_user_prompt(
 {text}
 [현재 번역 대상 끝]
 
-현재 번역 대상만 한국어로 번역하십시오.
+현재 번역 대상만 {target_language}로 번역하십시오.
 """.strip()
     )
 
@@ -796,11 +890,11 @@ def make_user_prompt(
 def translate_chunk(
     text: str,
     glossary: dict,
+    source_language: str,
+    target_language: str,
     previous_source: str = "",
     previous_translation: str = "",
 ) -> str:
-    source_language = detect_source_language(text)
-
     glossary_search_text = (
         previous_source
         + "\n"
@@ -822,6 +916,7 @@ def translate_chunk(
             "role": "system",
             "content": make_system_prompt(
                 source_language=source_language,
+                target_language=target_language,
                 glossary=relevant_glossary,
                 current_text=text,
             ),
@@ -830,6 +925,7 @@ def translate_chunk(
             "role": "user",
             "content": make_user_prompt(
                 text=text,
+                target_language=target_language,
                 previous_source=previous_source,
                 previous_translation=previous_translation,
             ),
@@ -993,17 +1089,29 @@ def translate_title(
     title: str,
     glossary: dict,
     source_language: str,
+    target_language: str,
 ) -> str:
+    if source_language == "Japanese":
+        proper_noun_rule = (
+            "일본 인명과 지명은 일본어 발음에 따라 "
+            "한글로 음역합니다."
+        )
+    else:
+        proper_noun_rule = (
+            "한국 인명과 지명은 용어집 표기를 우선하고, "
+            "없으면 원래 발음에 따라 일본어로 음역합니다."
+        )
+
     messages = [
         {
             "role": "system",
             "content": f"""
-당신은 {source_language} 소설 제목을 한국어로 번역하는 번역가입니다.
+당신은 {source_language} 소설 제목을 {target_language}로 번역하는 번역가입니다.
 
 규칙:
 1. 소설 제목답게 자연스럽고 간결하게 번역합니다.
 2. 원문의 의미와 분위기를 유지합니다.
-3. 일본 인명과 지명은 일본어 발음에 따라 한글로 음역합니다.
+3. {proper_noun_rule}
 4. 용어집 표기를 우선합니다.
 5. 번역된 제목만 출력합니다.
 6. 설명, 따옴표, 후보 목록은 출력하지 않습니다.
@@ -1070,19 +1178,30 @@ def save_progress(path: Path, progress: dict) -> None:
 # 전체 번역
 # =========================
 
-def prepare_glossary_candidates(input_path: Path) -> None:
+def prepare_glossary_candidates(
+    input_path: Path,
+    direction_key: str,
+) -> None:
     """원문을 청크별로 분석해 검토용 용어집 후보를 만든다."""
+    direction = TRANSLATION_DIRECTIONS[direction_key]
+    source_language = direction["source_language"]
+    target_language = direction["target_language"]
+    glossary_path = direction["glossary_path"]
+    candidates_path = direction["candidates_path"]
+
     print()
     print(f"입력 파일: {input_path.name}")
     print()
 
-    source_text = read_source_text(input_path)
+    source_text = read_source_text(input_path, source_language)
 
     if not source_text.strip():
         raise ValueError("입력 파일에 내용이 없습니다.")
 
-    source_language = detect_source_language(source_text)
-    print(f"감지된 원문 언어: {source_language}")
+    print(
+        f"번역 방향: {direction['source_label']} → "
+        f"{direction['target_label']}"
+    )
 
     blocks = split_into_blocks(source_text)
     chunks = build_chunks(blocks)
@@ -1101,24 +1220,29 @@ def prepare_glossary_candidates(input_path: Path) -> None:
         chunk_candidates = generate_glossary_candidates(
             source_text=chunk,
             source_language=source_language,
+            target_language=target_language,
         )
         candidates = merge_candidate_results(
             candidates,
             chunk_candidates,
         )
 
-    reading_hints = extract_furigana_hints(source_text)
-    candidates = apply_furigana_hints(candidates, reading_hints)
+    if source_language == "Japanese":
+        reading_hints = extract_furigana_hints(source_text)
+        candidates = apply_furigana_hints(
+            candidates,
+            reading_hints,
+        )
 
-    existing_glossary = load_glossary(GLOSSARY_PATH)
+    existing_glossary = load_glossary(glossary_path)
 
     for source in existing_glossary:
         candidates.pop(source, None)
 
-    save_json_file(GLOSSARY_CANDIDATES_PATH, candidates)
+    save_json_file(candidates_path, candidates)
 
     print()
-    print(f"용어집 후보 저장: {GLOSSARY_CANDIDATES_PATH.name}")
+    print(f"용어집 후보 저장: {candidates_path.name}")
     print(f"추가된 용어집 후보: {len(candidates)}개")
 
     if candidates:
@@ -1130,12 +1254,12 @@ def prepare_glossary_candidates(input_path: Path) -> None:
                 print(f"- {source} → {entry}")
                 continue
 
-            korean = entry.get("korean", "") or "미입력"
+            target = get_glossary_target(entry) or "미입력"
             reading = entry.get("reading", "") or "미확인"
             entry_type = entry.get("type", "") or "미분류"
 
             print(
-                f"- {source} → {korean} "
+                f"- {source} → {target} "
                 f"(독음: {reading}, 분류: {entry_type})"
             )
 
@@ -1143,26 +1267,32 @@ def prepare_glossary_candidates(input_path: Path) -> None:
 
     print(
         "후보를 검토한 뒤 확정 항목을 "
-        "glossary.json에 반영하세요."
+        f"{glossary_path.name}에 반영하세요."
     )
 
 
-def translate_novel(input_path: Path) -> None:
+def translate_novel(input_path: Path, direction_key: str) -> None:
+    direction = TRANSLATION_DIRECTIONS[direction_key]
+    source_language = direction["source_language"]
+    target_language = direction["target_language"]
+    glossary_path = direction["glossary_path"]
+
     print()
     print(f"입력 파일: {input_path.name}")
     print()
 
-    source_text = read_source_text(input_path)
+    source_text = read_source_text(input_path, source_language)
 
     if not source_text.strip():
         raise ValueError("입력 파일에 번역할 내용이 없습니다.")
 
-    # 언어 감지
-    source_language = detect_source_language(source_text)
-    print(f"감지된 원문 언어: {source_language}")
+    print(
+        f"번역 방향: {direction['source_label']} → "
+        f"{direction['target_label']}"
+    )
 
     # 용어집 불러오기
-    glossary = load_glossary(GLOSSARY_PATH)
+    glossary = load_glossary(glossary_path)
 
     # 첫 번째 비어 있지 않은 줄을 제목으로 분리
 
@@ -1179,12 +1309,14 @@ def translate_novel(input_path: Path) -> None:
         title=original_title,
         glossary=glossary,
         source_language=source_language,
+        target_language=target_language,
     )
 
     print(f"번역 제목: {translated_title}")
 
     output_path, progress_path = make_output_paths(
         input_path=input_path,
+        direction_key=direction_key,
         translated_title=translated_title,
     )
 
@@ -1221,11 +1353,12 @@ def translate_novel(input_path: Path) -> None:
     )
 
     saved_source_file = progress.get("source_file")
+    saved_direction = progress.get("direction")
 
     # 다른 파일의 진행 기록이면 초기화
     if (
-        saved_source_file
-        and saved_source_file != input_path.name
+        (saved_source_file and saved_source_file != input_path.name)
+        or (saved_direction and saved_direction != direction_key)
     ):
         print(
             "진행 파일과 입력 파일이 일치하지 않아 "
@@ -1294,6 +1427,8 @@ def translate_novel(input_path: Path) -> None:
             translated = translate_chunk(
                 text=chunk,
                 glossary=glossary,
+                source_language=source_language,
+                target_language=target_language,
                 previous_source=previous_source,
                 previous_translation=previous_translation,
             )
@@ -1312,6 +1447,7 @@ def translate_novel(input_path: Path) -> None:
         # 진행 상태 저장
         progress = {
             "source_file": input_path.name,
+            "direction": direction_key,
             "completed_chunks": index + 1,
             "total_chunks": len(chunks),
             "translations": translations,
@@ -1351,6 +1487,11 @@ def main() -> None:
                 print("프로그램을 종료합니다.")
                 return
 
+            direction_key = select_translation_direction()
+
+            if direction_key == "back":
+                continue
+
             input_path = select_input_file()
 
             if input_path is None:
@@ -1358,9 +1499,9 @@ def main() -> None:
                 continue
 
             if operation == "extract_glossary":
-                prepare_glossary_candidates(input_path)
+                prepare_glossary_candidates(input_path, direction_key)
             else:
-                translate_novel(input_path)
+                translate_novel(input_path, direction_key)
 
             print()
             print("작업이 완료되었습니다.")
