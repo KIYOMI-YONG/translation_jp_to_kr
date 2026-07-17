@@ -14,7 +14,7 @@ import ollama
 
 # 각 작업은 서로 다른 Ollama 모델을 사용할 수 있다.
 # 후보 추출 모델은 설치된 소형 모델 태그로 변경할 수 있다.
-GLOSSARY_MODEL_NAME = "qwen3:4b"
+GLOSSARY_MODEL_NAME = "gemma4:12b-it-qat"
 TRANSLATION_MODEL_NAME = "gemma4:12b-it-qat"
 TITLE_MODEL_NAME = "gemma4:e2b"
 BASE_DIR = Path(__file__).resolve().parent
@@ -311,12 +311,22 @@ def load_glossary(path: Path) -> dict:
     if not path.exists():
         return {}
 
-    with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
+    raw_text = path.read_text(encoding="utf-8-sig")
+
+    if not raw_text.strip():
+        return {}
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"{path.name}의 JSON 형식이 잘못되었습니다. "
+            f"{error.lineno}행 {error.colno}열: {error.msg}"
+        ) from error
 
     if not isinstance(data, dict):
         raise ValueError(
-            "glossary.json의 최상위 구조는 JSON 객체여야 합니다."
+            f"{path.name}의 최상위 구조는 JSON 객체여야 합니다."
         )
 
     for source, entry in data.items():
@@ -401,37 +411,67 @@ def generate_glossary_candidates(
 {source_text}
 """.strip()
 
-    response = ollama.chat(
-        model=GLOSSARY_MODEL_NAME,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        think=False,
-        options={
-            "temperature": 0.0,
-            "num_ctx": 8192,
-            "num_predict": 2000,
-        },
-        keep_alive="30m",
-    )
+    last_error: Exception | None = None
+    last_raw_result = ""
 
-    raw_result = response.message.content.strip()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = ollama.chat(
+                model=GLOSSARY_MODEL_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                format="json",
+                think=False,
+                options={
+                    "temperature": 0.0,
+                    "num_ctx": 8192,
+                    "num_predict": 2000,
+                },
+                keep_alive="30m",
+            )
 
-    try:
-        result = json.loads(raw_result)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(
-            "자동 용어집 결과를 JSON으로 읽지 못했습니다.\n"
-            f"모델 출력:\n{raw_result}"
-        ) from error
+            last_raw_result = (
+                response.message.content or ""
+            ).strip()
 
-    if not isinstance(result, dict):
-        raise ValueError("자동 용어집 결과가 JSON 객체가 아닙니다.")
+            if not last_raw_result:
+                raise RuntimeError(
+                    "자동 용어집 모델이 빈 응답을 반환했습니다."
+                )
 
-    return result
+            result = json.loads(last_raw_result)
+
+            if not isinstance(result, dict):
+                raise ValueError(
+                    "자동 용어집 결과가 JSON 객체가 아닙니다."
+                )
+
+            return result
+
+        except (
+            json.JSONDecodeError,
+            RuntimeError,
+            ValueError,
+        ) as error:
+            last_error = error
+            print(
+                f"용어집 후보 요청 실패 "
+                f"({attempt}/{MAX_RETRIES}): {error}"
+            )
+
+            if attempt < MAX_RETRIES:
+                wait_seconds = 2 ** attempt
+                print(f"{wait_seconds}초 후 다시 시도합니다.")
+                time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        "자동 용어집 결과를 JSON으로 읽지 못했습니다.\n"
+        f"마지막 모델 출력:\n{last_raw_result}"
+    ) from last_error
 
 def merge_glossaries(
     existing: dict,
@@ -1137,7 +1177,7 @@ def translate_title(
         },
     )
 
-    translated_title = response.message.content.strip()
+    translated_title = (response.message.content or "").strip()
 
     if not translated_title:
         raise RuntimeError("제목 번역 결과가 비어 있습니다.")
@@ -1209,6 +1249,7 @@ def prepare_glossary_candidates(
     if not chunks:
         raise ValueError("용어를 추출할 청크를 생성하지 못했습니다.")
 
+    existing_glossary = load_glossary(glossary_path)
     candidates: dict = {}
 
     for index, chunk in enumerate(chunks, start=1):
@@ -1227,14 +1268,17 @@ def prepare_glossary_candidates(
             chunk_candidates,
         )
 
+        for source in existing_glossary:
+            candidates.pop(source, None)
+
+        save_json_file(candidates_path, candidates)
+
     if source_language == "Japanese":
         reading_hints = extract_furigana_hints(source_text)
         candidates = apply_furigana_hints(
             candidates,
             reading_hints,
         )
-
-    existing_glossary = load_glossary(glossary_path)
 
     for source in existing_glossary:
         candidates.pop(source, None)
@@ -1478,14 +1522,14 @@ def translate_novel(input_path: Path, direction_key: str) -> None:
 # 프로그램 종료
 # =========================
         
-def main() -> None:
+def main() -> int:
     try:
         while True:
             operation = select_operation()
 
             if operation == "quit":
                 print("프로그램을 종료합니다.")
-                return
+                return 0
 
             direction_key = select_translation_direction()
 
@@ -1511,12 +1555,14 @@ def main() -> None:
         print()
         print("사용자가 번역을 중단했습니다.")
         print("다음 실행 시 저장된 지점부터 이어집니다.")
+        return 130
 
     except Exception as error:
         print()
         print("번역 중 오류가 발생했습니다.")
         print(f"오류 내용: {error}")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
